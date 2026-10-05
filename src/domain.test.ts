@@ -96,6 +96,51 @@ describe('findSafestRoute', () => {
     closed.closedExits.add('E1')
     expect(route('R1', closed)?.exitId).toBe('E2')
   })
+
+  it('ignores display coordinates and excludes blocked or disconnected edges', () => {
+    const moved = structuredClone(sample)
+    moved.nodes.forEach((node, index) => {
+      node.x = (index + 1) * 100_000
+      node.y = (index - 2) * -50_000
+    })
+    expect(findSafestRoute(moved, initialHazards(moved), 'R1')).toMatchObject({
+      nodeIds: ['R1', 'C1', 'C2', 'E1'],
+      cost: 7,
+    })
+
+    const blockedEdge = initialHazards(sample)
+    blockedEdge.blockedEdges.add('a')
+    expect(route('R1', blockedEdge)).toMatchObject({
+      nodeIds: ['R1', 'C3', 'C4', 'E2'],
+      cost: 11,
+    })
+
+    const disconnected = initialHazards(sample)
+    disconnected.blockedEdges.add('a')
+    disconnected.blockedEdges.add('d')
+    expect(route('R1', disconnected)).toBeNull()
+  })
+
+  it('does not use a closed exit as an intermediate node', () => {
+    const bridge: BuildingDataset = {
+      building: 'Closed exit bridge',
+      nodes: [
+        { id: 'S', label: 'Start', type: 'room', x: 0, y: 0 },
+        { id: 'E1', label: 'Closed bridge', type: 'exit', x: 1, y: 0 },
+        { id: 'J', label: 'Junction', type: 'junction', x: 2, y: 0 },
+        { id: 'E2', label: 'Destination', type: 'exit', x: 3, y: 0 },
+      ],
+      edges: [
+        { id: 'se', from: 'S', to: 'E1', cost: 1 },
+        { id: 'ej', from: 'E1', to: 'J', cost: 1 },
+        { id: 'je', from: 'J', to: 'E2', cost: 1 },
+      ],
+      initial_state: { blocked_nodes: [], blocked_edges: [], closed_exits: [] },
+    }
+    const hazards = initialHazards(bridge)
+    hazards.closedExits.add('E1')
+    expect(findSafestRoute(bridge, hazards, 'S')).toBeNull()
+  })
 })
 
 describe('parseBuildingJson', () => {
@@ -115,5 +160,26 @@ describe('parseBuildingJson', () => {
     expect(result.issues.map((issue) => issue.code)).toEqual(
       expect.arrayContaining(['blockedExit', 'unknownBlockedNode', 'invalidEdgeCost']),
     )
+  })
+
+  it('does not confuse distinct undirected pairs when IDs contain separators', () => {
+    const unusualIds: BuildingDataset = {
+      building: 'Unusual IDs',
+      nodes: [
+        { id: 'A\u0000B', label: 'Room AB', type: 'room', x: 0, y: 0 },
+        { id: 'C', label: 'Cross C', type: 'junction', x: 1, y: 0 },
+        { id: 'A', label: 'Room A', type: 'room', x: 0, y: 1 },
+        { id: 'B\u0000C', label: 'Cross BC', type: 'junction', x: 1, y: 1 },
+        { id: 'E', label: 'Exit', type: 'exit', x: 2, y: 0 },
+      ],
+      edges: [
+        { id: 'first', from: 'A\u0000B', to: 'C', cost: 1 },
+        { id: 'second', from: 'A', to: 'B\u0000C', cost: 1 },
+        { id: 'third', from: 'C', to: 'E', cost: 1 },
+      ],
+      initial_state: { blocked_nodes: [], blocked_edges: [], closed_exits: [] },
+    }
+
+    expect(parseBuildingJson(JSON.stringify(unusualIds)).dataset).toBeDefined()
   })
 })

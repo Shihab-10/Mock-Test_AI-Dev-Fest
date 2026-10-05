@@ -205,7 +205,7 @@ export function validateBuildingDataset(value: unknown): ValidationResult {
       return
     }
 
-    const pair = from < to ? `${from}\u0000${to}` : `${to}\u0000${from}`
+    const pair = JSON.stringify(from < to ? [from, to] : [to, from])
     if (nodePairs.has(pair)) {
       issues.push({ code: 'duplicateEdgePair', params: { id } })
       return

@@ -60,6 +60,15 @@ function getInitialTheme(): Theme {
   }
 }
 
+function shouldShowIntro(): boolean {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false
+  try {
+    return window.sessionStorage.getItem('smart-escape-intro-seen') !== 'yes'
+  } catch {
+    return true
+  }
+}
+
 function routeEdgeKeys(route: SafeRoute | null): Set<string> {
   const keys = new Set<string>()
   if (!route) return keys
@@ -67,12 +76,14 @@ function routeEdgeKeys(route: SafeRoute | null): Set<string> {
   for (let index = 1; index < route.nodeIds.length; index += 1) {
     const previous = route.nodeIds[index - 1]
     const current = route.nodeIds[index]
-    keys.add(previous < current ? `${previous}\u0000${current}` : `${current}\u0000${previous}`)
+    keys.add(JSON.stringify(previous < current ? [previous, current] : [current, previous]))
   }
   return keys
 }
 
 function App() {
+  const [introVisible, setIntroVisible] = useState(shouldShowIntro)
+  const [introClosing, setIntroClosing] = useState(false)
   const [dataset, setDataset] = useState<BuildingDataset | null>(null)
   const [hazards, setHazards] = useState<HazardState | null>(null)
   const [selectedStart, setSelectedStart] = useState('')
@@ -106,14 +117,45 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [toast])
 
+  useEffect(() => {
+    if (!introVisible) return
+    const timer = window.setTimeout(() => {
+      setIntroClosing(true)
+      try {
+        window.sessionStorage.setItem('smart-escape-intro-seen', 'yes')
+      } catch {
+        setIntroVisible(false)
+        return
+      }
+      window.setTimeout(() => setIntroVisible(false), 180)
+    }, 1900)
+    return () => window.clearTimeout(timer)
+  }, [introVisible])
+
   const announce = (key: TranslationKey, tone: ToastMessage['tone'] = 'info') => {
     setToast({ key, tone })
+  }
+
+  const skipIntro = () => {
+    setIntroClosing(true)
+    try {
+      window.sessionStorage.setItem('smart-escape-intro-seen', 'yes')
+    } catch {
+      setIntroVisible(false)
+      return
+    }
+    window.setTimeout(() => setIntroVisible(false), 180)
   }
 
   const route = useMemo(() => {
     if (!dataset || !hazards || !selectedStart || hazards.blockedNodes.has(selectedStart)) return null
     return findSafestRoute(dataset, hazards, selectedStart)
   }, [dataset, hazards, selectedStart])
+
+  const baselineRoute = useMemo(() => {
+    if (!dataset || !selectedStart) return null
+    return findSafestRoute(dataset, initialHazards(dataset), selectedStart)
+  }, [dataset, selectedStart])
 
   const openExitCount = dataset && hazards
     ? dataset.nodes.filter((node) => node.type === 'exit' && !hazards.closedExits.has(node.id)).length
@@ -224,6 +266,37 @@ function App() {
 
   return (
     <div className="app-shell" lang={language} data-theme={theme}>
+      {introVisible && (
+        <div
+          className={`intro-screen${introClosing ? ' is-leaving' : ''}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Smart Escape introduction"
+          onKeyDown={(event) => { if (event.key === 'Escape') skipIntro() }}
+        >
+          <div className="intro-blueprint" aria-hidden="true">
+            <svg viewBox="0 0 900 340" preserveAspectRatio="xMidYMid meet">
+              <path className="intro-corridor" d="M80 220H250V100H430V220H610V100H820" />
+              <path className="intro-corridor" d="M250 220H430M430 220V300H610V220" />
+              <path className="intro-route intro-route-primary" d="M80 220H250V100H430V220H610V100H820" />
+              <path className="intro-corridor-closed" d="M430 220H610" />
+              <path className="intro-route intro-route-reroute" d="M80 220H250V100H430V300H610V100H820" />
+              {[ [80,220], [250,220], [250,100], [430,100], [430,220], [430,300], [610,220], [610,100], [610,300], [820,100] ].map(([cx, cy], index) => (
+                <circle className={`intro-node intro-node-${index}`} cx={cx} cy={cy} r="9" key={`${cx}-${cy}`} />
+              ))}
+              <circle className="intro-destination" cx="820" cy="100" r="18" />
+            </svg>
+          </div>
+          <div className="intro-brand-block">
+            <span className="intro-emblem" aria-hidden="true"><i /><i /><i /><b /></span>
+            <strong>SMART ESCAPE</strong>
+            <span>{text('introSubtitle')}</span>
+          </div>
+          <button className="intro-skip" type="button" autoFocus onClick={skipIntro}>
+            {text('skipIntro')} <span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      )}
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Smart Escape home">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
@@ -272,8 +345,12 @@ function App() {
       {guideOpen && (
         <aside className="guide-popover" role="dialog" aria-label={text('help')}>
           <button className="guide-close" type="button" aria-label={text('close')} onClick={() => setGuideOpen(false)}>×</button>
-          <strong>{text('routeIntelligence')}</strong>
-          <p>{text('routeUpdatesDescription')}</p>
+          <strong>{text('guideTitle')}</strong>
+          <ol className="guide-steps">
+            <li>{text('guideImport')}</li>
+            <li>{text('guideStart')}</li>
+            <li>{text('guideHazards')}</li>
+          </ol>
           <p>{text('routeUpdatesFootnote')}</p>
         </aside>
       )}
@@ -473,16 +550,17 @@ function App() {
                       </pattern>
                     </defs>
                     <rect width="1000" height="560" fill="url(#map-grid)" className="map-grid" />
-                    {dataset.edges.map((edge) => {
+                    {dataset.edges.map((edge, index) => {
                       const from = points.get(edge.from)!
                       const to = points.get(edge.to)!
                       const blocked = hazards?.blockedEdges.has(edge.id) ?? false
-                      const key = edge.from < edge.to ? `${edge.from}\u0000${edge.to}` : `${edge.to}\u0000${edge.from}`
+                      const key = JSON.stringify(edge.from < edge.to ? [edge.from, edge.to] : [edge.to, edge.from])
                       const isActive = activeRouteEdges.has(key)
                       const edgeDescription = `${text('edgeId')} ${edge.id}, ${text('fromLabel')} ${edge.from}, ${text('toLabel')} ${edge.to}, ${text('cost')} ${edge.cost}, ${text(blocked ? 'stateBlocked' : 'stateAvailable')}`
                       return (
                         <g
                           className={`edge-hit${blocked ? ' blocked' : ''}${isActive ? ' active' : ''}`}
+                          style={{ animationDelay: `${Math.min(index * 8, 280)}ms` }}
                           key={edge.id}
                           role="button"
                           tabIndex={0}
@@ -510,7 +588,7 @@ function App() {
                         </g>
                       )
                     })}
-                    {dataset.nodes.map((node) => {
+                    {dataset.nodes.map((node, index) => {
                       const point = points.get(node.id)!
                       const blocked = hazards?.blockedNodes.has(node.id) ?? false
                       const closed = hazards?.closedExits.has(node.id) ?? false
@@ -523,6 +601,7 @@ function App() {
                       return (
                         <g
                           className={`node ${stateClass}${selected ? ' selected' : ''}${active ? ' on-route' : ''}${canSelect ? ' selectable' : ''}`}
+                          style={{ animationDelay: `${Math.min(index * 12, 420)}ms` }}
                           key={node.id}
                           transform={`translate(${point.x} ${point.y})`}
                           role="button"
@@ -652,6 +731,21 @@ function App() {
                       closedExits: closedExitCount,
                     })}</p>
                   </div>
+                </div>
+              )}
+              {selectedStart && (
+                <div className="baseline-route" aria-label={text('baselineRoute')}>
+                  <div className="baseline-route-heading">
+                    <span>{text('baselineRoute')}</span>
+                    {baselineRoute && <strong>{baselineRoute.cost}</strong>}
+                  </div>
+                  {baselineRoute ? (
+                    <div className="baseline-sequence">
+                      {baselineRoute.nodeIds.map((id, index) => (
+                        <span key={`${id}-${index}`}>{id}{index < baselineRoute.nodeIds.length - 1 && <i aria-hidden="true">→</i>}</span>
+                      ))}
+                    </div>
+                  ) : <p>{text('baselineUnavailable')}</p>}
                 </div>
               )}
               {dataset && hazards && (

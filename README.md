@@ -1,48 +1,78 @@
 # Smart Escape
 
-Smart Escape is a browser-only evacuation route simulator. Import a building graph, select a room or junction, and recalculate the lowest-cost open exit as hazards change. The SVG map uses node coordinates for display only; routing uses corridor costs.
+Interactive Evacuation Route Simulator
 
-## Run
+- **Participant:** Shihabul Alam
+- **Registration Number:** Not provided; add the competition registration number before submission.
+- **Repository:** https://github.com/Shihab-10/Mock-Test_AI-Dev-Fest
+- **Live Website:** Not deployed yet.
+
+## Overview
+
+Smart Escape is a browser-based emergency intelligence command center. Import a building graph, select a starting room or junction, and find the lowest-cost open exit while dynamically changing hazards.
+
+## Main Features
+
+- Drag/drop and browse import for validated building JSON.
+- Interactive SVG graph with coordinate-based display, node/corridor details, route highlighting, and semantic hazard states.
+- Undirected weighted shortest-path routing with deterministic exit and complete-path lexicographic tie-breaking.
+- Live hazard controls, automatic rerouting, and reset to the imported `initial_state`.
+- Bilingual English/Bangla interface, persistent light/dark themes, live statistics, route rationale, and accessible notifications.
+- Responsive command-center layout, keyboard-inspectable map, reduced-motion support, and a short skippable intro.
+
+## Mandatory Requirements
+
+JSON validation, arbitrary compatible graph datasets, weighted Dijkstra routing, exact tie-breaking, start selection, blocked-node/edge and closed-exit filtering, dynamic rerouting, reset, failure states, route result, bilingual UI, responsive map, and static frontend deployment support are implemented.
+
+## Bonus Features
+
+Persistent themes, live status/stat cards, deterministic route explanation, map inspection details, toasts, cinematic intro, and subtle route/guide animations. A route walkthrough is not implemented.
+
+## Tech Stack
+
+React, TypeScript, Vite, CSS, SVG, browser storage, and Vitest.
+
+## How to Run
 
 ```sh
 npm install
 npm run dev
 ```
 
-Run the checks with:
+## Production Build
+
+```sh
+npm run build
+```
+
+Additional checks:
 
 ```sh
 npm exec vitest -- run
 npm run lint
-npm run build
 ```
 
-## Building JSON
+## Routing Algorithm
 
-Import a `.json` file with this structure:
+The validated building is an undirected weighted graph. Dijkstra's algorithm sums positive integer corridor costs; coordinates are only for drawing. Blocked nodes and their incident edges, blocked corridors, and closed exits are excluded. The minimum-cost reachable open exit is selected; equal-cost exits use lexicographically smallest exit ID, then equal-cost paths use the lexicographically smallest complete node-ID sequence.
 
-```json
-{
-  "building": "Example building",
-  "nodes": [
-    { "id": "A", "label": "Room A", "type": "room", "x": 0, "y": 0 },
-    { "id": "X", "label": "North exit", "type": "exit", "x": 1, "y": 0 }
-  ],
-  "edges": [
-    { "id": "hall-a", "from": "A", "to": "X", "cost": 4 }
-  ],
-  "initial_state": {
-    "blocked_nodes": [],
-    "blocked_edges": [],
-    "closed_exits": []
-  }
-}
-```
+## Input JSON Format
 
-A dataset must contain 2–60 uniquely identified nodes and 1–150 uniquely identified corridors. Nodes are rooms, junctions, or exits. Corridor connections are undirected, costs are positive integers, and duplicate node pairs/self-loops are not allowed. Initial hazard arrays may be empty; blocked nodes cannot be exits.
+Required fields are `building`, `nodes`, `edges`, and `initial_state`. A building name must be nonempty. Supply 2–60 nodes (`id`, `label`, `type`, numeric `x`/`y`) and 1–150 corridors (`id`, `from`, `to`, positive integer `cost`). Node types are `room`, `junction`, and `exit`. Connections are undirected; self-loops and duplicate node pairs are invalid. `initial_state` requires `blocked_nodes`, `blocked_edges`, and `closed_exits` arrays; empty arrays are valid. Exits are closed, not blocked as nodes.
 
-## Behavior
+## AI Tools Used
 
-The route solver runs in the browser and sums corridor costs. It excludes blocked nodes, blocked corridors, and closed exits, then breaks equal-cost ties by exit ID and complete node-ID sequence. Reset restores the imported initial hazards. The interface supports English and Bangla without a reload.
+GitHub Copilot was used as the coding agent for implementation and verification.
 
-No backend, remote storage, credentials, or API keys are used. The static build in `dist/` can be deployed to a static hosting provider.
+## Most Useful Prompt
+
+Build a frontend-only bilingual evacuation simulator with strict arbitrary JSON graph validation, exact weighted shortest paths and lexicographic tie-breaking, live hazards, and reliable reset.
+
+## Known Issues
+
+- The app has not yet been deployed to a live static host.
+- The participant registration number was not supplied.
+
+## Competition Compliance
+
+Frontend-only. No backend, participant-controlled persistent remote database, embedded secrets, or API keys. Theme preference uses browser local storage; the intro-seen flag uses session storage.
