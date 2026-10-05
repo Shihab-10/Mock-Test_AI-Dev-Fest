@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react'
 import {
   findSafestRoute,
@@ -9,10 +9,17 @@ import {
   type SafeRoute,
   type ValidationIssue,
 } from './domain'
-import { formatValidationIssue, t, type Language, type TranslationKey } from './i18n'
+import { fillTranslation, formatValidationIssue, t, type Language, type TranslationKey } from './i18n'
 import './App.css'
 
 type RouteStatus = 'ready' | 'noStart' | 'startBlocked' | 'allExitsClosed' | 'noRoute' | 'found'
+type Theme = 'light' | 'dark'
+type MapInspection = { kind: 'node'; id: string } | { kind: 'edge'; id: string }
+
+interface ToastMessage {
+  key: TranslationKey
+  tone: 'success' | 'warning' | 'info'
+}
 
 interface Point {
   x: number
@@ -45,6 +52,14 @@ function projectNodes(dataset: BuildingDataset): Map<string, Point> {
   )
 }
 
+function getInitialTheme(): Theme {
+  try {
+    return window.localStorage.getItem('smart-escape-theme') === 'dark' ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
+}
+
 function routeEdgeKeys(route: SafeRoute | null): Set<string> {
   const keys = new Set<string>()
   if (!route) return keys
@@ -62,11 +77,38 @@ function App() {
   const [hazards, setHazards] = useState<HazardState | null>(null)
   const [selectedStart, setSelectedStart] = useState('')
   const [language, setLanguage] = useState<Language>('en')
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [toast, setToast] = useState<ToastMessage | null>(null)
+  const [mapInspection, setMapInspection] = useState<MapInspection | null>(null)
+  const [guideOpen, setGuideOpen] = useState(false)
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([])
   const [uploadMessage, setUploadMessage] = useState<'unsupportedFile' | 'readError' | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const text = (key: TranslationKey) => t(language, key)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      'content',
+      theme === 'dark' ? '#071321' : '#edf2f7',
+    )
+    try {
+      window.localStorage.setItem('smart-escape-theme', theme)
+    } catch {
+      return
+    }
+  }, [theme])
+
+  useEffect(() => {
+    if (!toast) return
+    const timeout = window.setTimeout(() => setToast(null), 3200)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
+
+  const announce = (key: TranslationKey, tone: ToastMessage['tone'] = 'info') => {
+    setToast({ key, tone })
+  }
 
   const route = useMemo(() => {
     if (!dataset || !hazards || !selectedStart || hazards.blockedNodes.has(selectedStart)) return null
@@ -77,6 +119,11 @@ function App() {
     ? dataset.nodes.filter((node) => node.type === 'exit' && !hazards.closedExits.has(node.id)).length
     : 0
   const totalExitCount = dataset?.nodes.filter((node) => node.type === 'exit').length ?? 0
+  const roomCount = dataset?.nodes.filter((node) => node.type === 'room').length ?? 0
+  const junctionCount = dataset?.nodes.filter((node) => node.type === 'junction').length ?? 0
+  const blockedNodeCount = hazards?.blockedNodes.size ?? 0
+  const blockedEdgeCount = hazards?.blockedEdges.size ?? 0
+  const closedExitCount = hazards?.closedExits.size ?? 0
 
   const routeStatus: RouteStatus = !dataset
     ? 'ready'
@@ -103,6 +150,7 @@ function App() {
 
     if (!file.name.toLowerCase().endsWith('.json')) {
       setUploadMessage('unsupportedFile')
+      announce('invalidJsonToast', 'warning')
       return
     }
 
@@ -110,14 +158,18 @@ function App() {
       const result = parseBuildingJson(await file.text())
       if (!result.dataset) {
         setValidationIssues(result.issues)
+        announce('invalidJsonToast', 'warning')
         return
       }
 
       setDataset(result.dataset)
       setHazards(initialHazards(result.dataset))
       setSelectedStart('')
+      setMapInspection(null)
+      announce('datasetLoadedToast', 'success')
     } catch {
       setUploadMessage('readError')
+      announce('invalidJsonToast', 'warning')
     }
   }
 
@@ -140,16 +192,24 @@ function App() {
       else nextSet.add(id)
       return { ...current, [kind]: nextSet }
     })
+    announce(selectedStart ? 'routeChangedToast' : 'routeRecalculatedToast', 'info')
   }
 
   const resetHazards = () => {
-    if (dataset) setHazards(initialHazards(dataset))
+    if (dataset) {
+      setHazards(initialHazards(dataset))
+      announce('simulationResetToast', 'success')
+    }
   }
 
   const handleNodeKey = (event: KeyboardEvent<SVGGElement>, nodeId: string, canSelect: boolean) => {
-    if (canSelect && (event.key === 'Enter' || event.key === ' ')) {
+    if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      setSelectedStart(nodeId)
+      setMapInspection({ kind: 'node', id: nodeId })
+      if (canSelect) {
+        setSelectedStart(nodeId)
+        announce('routeRecalculatedToast', 'info')
+      }
     }
   }
 
@@ -157,9 +217,13 @@ function App() {
   const activeRouteEdges = routeEdgeKeys(route)
   const routeNodes = new Set(route?.nodeIds ?? [])
   const nodeById = new Map(dataset?.nodes.map((node) => [node.id, node]) ?? [])
+  const inspectedNode = mapInspection?.kind === 'node' ? nodeById.get(mapInspection.id) : undefined
+  const inspectedEdge = mapInspection?.kind === 'edge'
+    ? dataset?.edges.find((edge) => edge.id === mapInspection.id)
+    : undefined
 
   return (
-    <div className="app-shell" lang={language}>
+    <div className="app-shell" lang={language} data-theme={theme}>
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Smart Escape home">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
@@ -168,7 +232,11 @@ function App() {
             <span>{text('brandSubtitle')}</span>
           </span>
         </a>
-        <div className="topbar-right">
+        <div className="header-building">
+          <span>{text('currentBuilding')}</span>
+          <strong title={dataset?.building ?? undefined}>{dataset?.building ?? text('awaitingBuilding')}</strong>
+        </div>
+        <div className="topbar-right header-actions">
           <span className="live-indicator"><i />{text('simulationLabel')}</span>
           <div className="language-switch" role="group" aria-label={text('language')}>
             <button
@@ -184,8 +252,31 @@ function App() {
               onClick={() => setLanguage('bn')}
             >বাংলা</button>
           </div>
+          <div className="theme-switch" role="group" aria-label={text('theme')}>
+            <button type="button" aria-label={text('lightMode')} aria-pressed={theme === 'light'} className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
+              <span aria-hidden="true">☼</span><span>{text('lightMode')}</span>
+            </button>
+            <button type="button" aria-label={text('darkMode')} aria-pressed={theme === 'dark'} className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>
+              <span aria-hidden="true">◐</span><span>{text('darkMode')}</span>
+            </button>
+          </div>
+          <button type="button" className="header-button header-help" aria-expanded={guideOpen} onClick={() => setGuideOpen((current) => !current)}>
+            <span aria-hidden="true">i</span>{text('help')}
+          </button>
+          <button type="button" className="header-button header-reset" disabled={!dataset} onClick={resetHazards}>
+            <span aria-hidden="true">↺</span>{text('reset')}
+          </button>
         </div>
       </header>
+
+      {guideOpen && (
+        <aside className="guide-popover" role="dialog" aria-label={text('help')}>
+          <button className="guide-close" type="button" aria-label={text('close')} onClick={() => setGuideOpen(false)}>×</button>
+          <strong>{text('routeIntelligence')}</strong>
+          <p>{text('routeUpdatesDescription')}</p>
+          <p>{text('routeUpdatesFootnote')}</p>
+        </aside>
+      )}
 
       <main id="top" className="page-content">
         <section className="page-heading">
@@ -202,6 +293,27 @@ function App() {
             </div>
           )}
         </section>
+
+        {dataset && hazards && (
+          <section className="stats-grid" aria-label={text('routeIntelligence')}>
+            {[
+              ['totalNodes', dataset.nodes.length, 'neutral'],
+              ['roomsStat', roomCount, 'room'],
+              ['junctionsStat', junctionCount, 'junction'],
+              ['totalExits', totalExitCount, 'exit'],
+              ['openExitsStat', openExitCount, 'safe'],
+              ['closedExitsStat', closedExitCount, 'danger'],
+              ['blockedNodesStat', blockedNodeCount, 'danger'],
+              ['blockedCorridorsStat', blockedEdgeCount, 'warning'],
+              ['currentCost', route?.cost ?? '—', route ? 'route' : 'neutral'],
+            ].map(([key, value, tone]) => (
+              <div className={`stat-card ${tone}`} key={key}>
+                <span>{text(key as TranslationKey)}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </section>
+        )}
 
         <div className="workspace-grid">
           <aside className="control-column" aria-label={text('controls')}>
@@ -258,7 +370,11 @@ function App() {
                 className="start-select"
                 value={selectedStart}
                 disabled={!dataset}
-                onChange={(event) => setSelectedStart(event.target.value)}
+                onChange={(event) => {
+                  setSelectedStart(event.target.value)
+                  setMapInspection(event.target.value ? { kind: 'node', id: event.target.value } : null)
+                  if (event.target.value) announce('routeRecalculatedToast', 'info')
+                }}
               >
                 <option value="">{text('chooseStart')}</option>
                 {startOptions.map((node) => <option key={node.id} value={node.id}>{node.label} ({node.id})</option>)}
@@ -287,6 +403,7 @@ function App() {
                           <div className={`hazard-row${blocked ? ' is-blocked' : ''}`} key={node.id}>
                             <span className={`mini-node ${node.type}`} />
                             <span className="hazard-name" title={node.label}>{node.label}<small>{node.id}</small></span>
+                            <span className={`state-badge ${blocked ? 'danger' : 'safe'}`}>{text(blocked ? 'stateBlocked' : 'stateAvailable')}</span>
                             <button type="button" className="state-button" aria-pressed={blocked} onClick={() => toggleHazard('blockedNodes', node.id)}>
                               {text(blocked ? 'unblock' : 'block')}
                             </button>
@@ -306,6 +423,7 @@ function App() {
                             <span className="hazard-name" title={`${edge.from} — ${edge.to}`}>
                               {edge.from} — {edge.to}<small>{text('cost')} {edge.cost}</small>
                             </span>
+                            <span className={`state-badge ${blocked ? 'danger' : 'safe'}`}>{text(blocked ? 'stateBlocked' : 'stateAvailable')}</span>
                             <button type="button" className="state-button" aria-pressed={blocked} onClick={() => toggleHazard('blockedEdges', edge.id)}>
                               {text(blocked ? 'unblock' : 'block')}
                             </button>
@@ -323,6 +441,7 @@ function App() {
                           <div className={`hazard-row${closed ? ' is-blocked' : ''}`} key={node.id}>
                             <span className="mini-node exit" />
                             <span className="hazard-name" title={node.label}>{node.label}<small>{node.id}</small></span>
+                            <span className={`state-badge ${closed ? 'danger' : 'safe'}`}>{text(closed ? 'stateClosed' : 'stateOpen')}</span>
                             <button type="button" className="state-button" aria-pressed={closed} onClick={() => toggleHazard('closedExits', node.id)}>
                               {text(closed ? 'reopen' : 'close')}
                             </button>
@@ -360,23 +479,28 @@ function App() {
                       const blocked = hazards?.blockedEdges.has(edge.id) ?? false
                       const key = edge.from < edge.to ? `${edge.from}\u0000${edge.to}` : `${edge.to}\u0000${edge.from}`
                       const isActive = activeRouteEdges.has(key)
-                      const ariaLabel = `${text('corridor')} ${edge.from} ${text('to')} ${edge.to}, ${text('cost')} ${edge.cost}, ${text(blocked ? 'blocked' : 'open')}`
+                      const edgeDescription = `${text('edgeId')} ${edge.id}, ${text('fromLabel')} ${edge.from}, ${text('toLabel')} ${edge.to}, ${text('cost')} ${edge.cost}, ${text(blocked ? 'stateBlocked' : 'stateAvailable')}`
                       return (
                         <g
                           className={`edge-hit${blocked ? ' blocked' : ''}${isActive ? ' active' : ''}`}
                           key={edge.id}
                           role="button"
                           tabIndex={0}
-                          aria-label={ariaLabel}
+                          aria-label={edgeDescription}
                           aria-pressed={blocked}
-                          onClick={() => toggleHazard('blockedEdges', edge.id)}
+                          onClick={() => {
+                            setMapInspection({ kind: 'edge', id: edge.id })
+                            toggleHazard('blockedEdges', edge.id)
+                          }}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
+                              setMapInspection({ kind: 'edge', id: edge.id })
                               toggleHazard('blockedEdges', edge.id)
                             }
                           }}
                         >
+                          <title>{edgeDescription}</title>
                           <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className="edge-hit-area" />
                           <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className="edge-line" />
                           <g className="edge-cost" transform={`translate(${(from.x + to.x) / 2} ${(from.y + to.y) / 2})`} aria-hidden="true">
@@ -394,18 +518,27 @@ function App() {
                       const selected = selectedStart === node.id
                       const active = routeNodes.has(node.id)
                       const stateClass = blocked ? 'blocked' : closed ? 'closed' : node.type
+                      const nodeState = blocked ? 'stateBlocked' : closed ? 'stateClosed' : node.type === 'exit' ? 'stateOpen' : 'stateAvailable'
+                      const nodeDescription = `${node.id}, ${node.label}, ${text(node.type)}, ${text(nodeState)}`
                       return (
                         <g
                           className={`node ${stateClass}${selected ? ' selected' : ''}${active ? ' on-route' : ''}${canSelect ? ' selectable' : ''}`}
                           key={node.id}
                           transform={`translate(${point.x} ${point.y})`}
-                          role={canSelect ? 'button' : 'img'}
-                          tabIndex={canSelect ? 0 : undefined}
-                          aria-label={`${node.label} (${node.id}), ${text(node.type)}, ${text(blocked ? 'blocked' : closed ? 'closed' : 'open')}${selected ? `, ${text('selected')}` : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`${nodeDescription}${selected ? `, ${text('selected')}` : ''}`}
                           aria-pressed={canSelect ? selected : undefined}
-                          onClick={() => { if (canSelect) setSelectedStart(node.id) }}
+                          onClick={() => {
+                            setMapInspection({ kind: 'node', id: node.id })
+                            if (canSelect) {
+                              setSelectedStart(node.id)
+                              announce('routeRecalculatedToast', 'info')
+                            }
+                          }}
                           onKeyDown={(event) => handleNodeKey(event, node.id, canSelect)}
                         >
+                          <title>{nodeDescription}</title>
                           {selected && <circle className="selection-ring" r="31" />}
                           {node.type === 'room' && <rect className="node-shape" x="-21" y="-17" width="42" height="34" rx="9" />}
                           {node.type === 'junction' && <rect className="node-shape junction-shape" x="-16" y="-16" width="32" height="32" rx="5" transform="rotate(45)" />}
@@ -418,12 +551,40 @@ function App() {
                     })}
                   </svg>
                 </div>
+                {(inspectedNode || inspectedEdge) && (
+                  <div className="map-inspector" role="status" aria-live="polite">
+                    {inspectedNode ? (
+                      <>
+                        <strong>{inspectedNode.id}</strong>
+                        <span>{inspectedNode.label}</span>
+                        <span>{text(inspectedNode.type)}</span>
+                        <span className={`state-badge ${hazards?.blockedNodes.has(inspectedNode.id) || hazards?.closedExits.has(inspectedNode.id) ? 'danger' : 'safe'}`}>
+                          {text(hazards?.blockedNodes.has(inspectedNode.id) ? 'stateBlocked' : hazards?.closedExits.has(inspectedNode.id) ? 'stateClosed' : inspectedNode.type === 'exit' ? 'stateOpen' : 'stateAvailable')}
+                        </span>
+                      </>
+                    ) : inspectedEdge ? (
+                      <>
+                        <strong>{inspectedEdge.id}</strong>
+                        <span>{text('fromLabel')}: {inspectedEdge.from}</span>
+                        <span>{text('toLabel')}: {inspectedEdge.to}</span>
+                        <span>{text('cost')}: {inspectedEdge.cost}</span>
+                        <span className={`state-badge ${hazards?.blockedEdges.has(inspectedEdge.id) ? 'danger' : 'safe'}`}>
+                          {text(hazards?.blockedEdges.has(inspectedEdge.id) ? 'stateBlocked' : 'stateAvailable')}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
+                )}
                 <div className="map-footer">
                   <div className="map-legend" aria-label={text('legend')}>
                     <span><i className="legend-dot room" />{text('room')}</span>
                     <span><i className="legend-dot junction" />{text('junction')}</span>
                     <span><i className="legend-dot exit" />{text('exit')}</span>
-                    <span><i className="legend-dot blocked" />{text('blocked')}</span>
+                    <span><i className="legend-dot selected" />{text('selectedStart')}</span>
+                    <span><i className="legend-dot route" />{text('activeRoute')}</span>
+                    <span><i className="legend-dot blocked" />{text('blockedNode')}</span>
+                    <span><i className="legend-dot blocked-edge" />{text('blockedCorridor')}</span>
+                    <span><i className="legend-dot closed-exit" />{text('closedExit')}</span>
                   </div>
                   <p>{text('mapInteractionHint')}</p>
                 </div>
@@ -464,7 +625,8 @@ function App() {
                 <div className="route-details">
                   <div className="route-start-line">
                     <span>{text('startingLocation')}</span>
-                    <strong>{nodeById.get(selectedStart)?.label ?? selectedStart}</strong>
+                    <strong title={nodeById.get(selectedStart)?.label ?? selectedStart}>{selectedStart}</strong>
+                    <small>{nodeById.get(selectedStart)?.label}</small>
                   </div>
                   <div className="route-sequence-block">
                     <span>{text('nodeSequence')}</span>
@@ -479,6 +641,16 @@ function App() {
                   <div className="route-metrics">
                     <div><span>{text('destination')}</span><strong>{route.exitId}</strong></div>
                     <div><span>{text('totalCost')}</span><strong>{route.cost}</strong></div>
+                  </div>
+                  <div className="route-explanation">
+                    <span>{text('whyRoute')}</span>
+                    <p>{fillTranslation(language, 'routeExplanation', {
+                      exit: route.exitId,
+                      cost: route.cost,
+                      blockedNodes: blockedNodeCount,
+                      blockedEdges: blockedEdgeCount,
+                      closedExits: closedExitCount,
+                    })}</p>
                   </div>
                 </div>
               )}
@@ -503,6 +675,13 @@ function App() {
           <span>{text('footerText')}</span>
         </footer>
       </main>
+      {toast && (
+        <div className={`toast-message ${toast.tone}`} role="status" aria-live="polite">
+          <span aria-hidden="true">{toast.tone === 'success' ? '✓' : toast.tone === 'warning' ? '!' : '↻'}</span>
+          <strong>{text(toast.key)}</strong>
+          <button type="button" aria-label={text('close')} onClick={() => setToast(null)}>×</button>
+        </div>
+      )}
     </div>
   )
 }
